@@ -28,7 +28,7 @@ A lightweight explorer for OffCKB devnets:
 | Week | Goal |
 |------|------|
 | 9  | Repo, plan, core: RPC client + script name resolver as a CLI |
-| 10 | Web UI: block list, transaction view |
+| 10 | Web UI: transaction feed, transaction view with inputs resolved, capacity bars. Plain HTML/JS served by the same Node process, no build step |
 | 11 | Cell inspector: decoded data, code cells labelled by data hash, xUDT/DAO/spore formats |
 | 12 | One-command run, README, demo |
 | 13 | Buffer, final report, demo video |

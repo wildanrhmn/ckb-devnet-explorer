@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ckb-devnet-explorer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="mark" href="#/">ckb&#8209;devnet&#8209;explorer</a>
+    <span class="tip" id="tip" title="Latest block on your devnet">connecting…</span>
+    <form id="search" class="search" role="search">
+      <label class="visually-hidden" for="q">Transaction hash or block number</label>
+      <input id="q" name="q" placeholder="Tx hash or block number" autocomplete="off" spellcheck="false">
+    </form>
+  </header>
+  <main class="layout">
+    <aside class="feed" aria-label="Recent transactions">
+      <h2 class="eyebrow">Recent transactions</h2>
+      <ol id="feed"></ol>
+    </aside>
+    <section id="detail" class="detail" aria-live="polite"></section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

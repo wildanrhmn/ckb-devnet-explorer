@@ -7,7 +7,8 @@
     "ckb-devnet-explorer": "./src/cli.ts"
   },
   "scripts": {
-    "scan": "tsx src/cli.ts"
+    "scan": "tsx src/cli.ts",
+    "serve": "tsx src/cli.ts serve"
   },
   "license": "MIT",
   "devDependencies": {

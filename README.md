@@ -193,7 +193,7 @@ The source is TypeScript run by [tsx](https://tsx.is), also when installed with 
 every view, `src/server.ts` is the HTTP API, and `src/web/` is the page. [docs/PLAN.md](docs/PLAN.md) has the
 scope and history.
 
-Built during the [CKBuilders](https://github.com/wildanrhmn/ckbuilders) program by Nervos Network.
+Built as my capstone for the [CKBuilders](https://github.com/wildanrhmn/ckbuilders) program by Nervos Network; the write-up is in [docs/CAPSTONE.md](docs/CAPSTONE.md).
 
 ## Credits and license
 

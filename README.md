@@ -135,6 +135,11 @@ npx github:wildanrhmn/ckb-devnet-explorer serve [options]
 | `--rpc <url>` | `http://127.0.0.1:8114` | The devnet node. |
 | `--port <n>` | `7070` | Port for the web UI. |
 | `--txs <n>` | `10` | How many transactions the terminal version prints. |
+| `--host <address>` | `127.0.0.1` | Bind address; explicitly choose another address to expose the server. |
+| `--system-scripts <file>` | invoke offckb | Read an offckb-format system-scripts JSON file; never invoke offckb when supplied. |
+| `--json` | off | Emit one integration API v1 ready record for `serve`; diagnostics remain on stderr. |
+| `--bridge <path>` | off | Serve HTTP over outbound connections to an embedder's Unix socket instead of listening on TCP. |
+| `--integration-info` | off | Print integration API version and capabilities offline. |
 
 Without `serve` it prints the latest transactions to the terminal:
 
@@ -157,6 +162,35 @@ npm install
 npm run serve -- --project ~/path/to/your-ckb-project
 ```
 
+## Embedding in offckb
+
+### Public CLI integration contract (v1)
+
+Embedders should invoke the declared `ckb-devnet-explorer` bin, not import `src/*` or inspect the tsx export map.
+Use `--integration-info` to check `apiVersion: 1` and the `host`, `system-scripts`, `bridge`, `json-ready` capabilities.
+These flags and the v1 record shape form the public compatibility contract; additions may be made within v1, while breaking changes require a new integration API version.
+
+```sh
+ckb-devnet-explorer serve --system-scripts /path/to/system-scripts.json \
+  --rpc http://127.0.0.1:28114 --host 127.0.0.1 --port 0 --json
+```
+
+The single stdout record is `{ "ok": true, "apiVersion": 1, "url": "http://127.0.0.1:PORT" }` after listening.
+Startup failure exits nonzero without emitting readiness. POSIX SIGINT/SIGTERM/SIGHUP close the server and exit with 130/143/129.
+An explicit scripts file is authoritative: an unreadable or invalid file fails rather than falling back to a PATH command.
+
+For a sandbox without TCP listening rights, `--bridge /path/to/embedder.sock` makes outbound Unix connections to the embedder instead.
+The embedder accepts multiple connections and sends ordinary HTTP/1.1 requests over each; use `Connection: close` for one request per connection.
+The process reconnects used/closed channels until shutdown. Readiness becomes `{ "ok": true, "apiVersion": 1, "transport": "bridge" }`.
+The embedder owns the external listener and its policy. Explorer never follows an embedder-controlled request to a different socket path.
+This mode requires a local Unix-socket-capable platform and fails if no bridge connects within five seconds.
+
+In bridge mode the explorer runs read-only: offckb's sandbox only forwards read RPC methods and has no
+`offckb` binary, so the faucet and transaction broadcast are switched off, and pages hide them.
+`/api/info` reports which of `faucet`, `broadcast` and `accounts` are available.
+
+Run `npm test` for the CLI contract checks.
+
 ## How it works
 
 ```
@@ -177,8 +211,8 @@ Details, including the DAO compensation math and how code cells are recognised:
 ## Safety
 
 It only reads, with two exceptions that refuse to run on anything but a devnet and only take JSON requests
-from your own machine: the faucet and the transaction broadcast tool. The server listens on all interfaces
-by default; keep the port to yourself on shared networks. Spore images are served image-only with a
+from your own machine: the faucet and the transaction broadcast tool. The server listens on 127.0.0.1
+by default; `--host` exposes it on purpose. Spore images are served image-only with a
 sandboxing content security policy, since spore content is whatever its minter chose.
 
 ## Development
@@ -187,6 +221,7 @@ sandboxing content security policy, since spore content is whatever its minter c
 npm install
 npm run serve -- --project ~/path/to/your-ckb-project   # run from source
 npm run check                                           # type-check
+npm test                                                # CLI contract tests
 ```
 
 The source is TypeScript run by [tsx](https://tsx.is), also when installed with npx. `src/explorer.ts` builds

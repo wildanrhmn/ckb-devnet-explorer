@@ -35,6 +35,10 @@ export class Faucet {
     else if (!this.account) this.problem = `offckb's account list has no account #${ACCOUNT_INDEX}.`;
   }
 
+  hasAccount() {
+    return !!this.account;
+  }
+
   // Forget claims from a chain that `offckb clean` wiped.
   reset() {
     this.claims = [];

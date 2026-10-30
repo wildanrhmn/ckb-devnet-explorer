@@ -133,6 +133,11 @@ export class Explorer {
     return { bytes: Number(u / 100_000_000n), block: num(header.number) };
   }
 
+  // Whether offckb's test account list could be read (it can't inside offckb's plugin sandbox).
+  hasAccounts() {
+    return !!offckbAccounts();
+  }
+
   // The CKB version the devnet node runs, e.g. "0.208.0 (585395c 2026-07-14)".
   private version: string | null = null;
   async nodeVersion() {

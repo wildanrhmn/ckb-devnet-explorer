@@ -81,6 +81,13 @@ async function render({ quiet = false } = {}) {
   }
 }
 
+// ---- features the server offers (embedded in offckb it runs read-only) ----
+
+function applyFeatures(features = {}) {
+  for (const name of ["faucet", "broadcast", "accounts"])
+    document.documentElement.dataset[name] = features[name] === false ? "off" : "on";
+}
+
 // ---- node status in the top bar ----
 
 let lastTip = null;
@@ -92,7 +99,8 @@ async function pollNode() {
     node.classList.add("up");
     node.classList.remove("down");
     node.title = `Connected to ${info.rpcUrl}`;
-    $("#node-label").textContent = `#${int(info.tip)} · v${info.node.split(" ")[0]}`;
+    $("#node-label").textContent = info.node ? `#${int(info.tip)} · v${info.node.split(" ")[0]}` : `#${int(info.tip)}`;
+    applyFeatures(info.features);
     if (lastTip !== null && info.tip !== lastTip) {
       node.classList.remove("tick");
       void node.offsetWidth;

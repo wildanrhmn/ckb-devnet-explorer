@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,10 +24,16 @@ const key = (codeHash: string, hashType: string) => `${codeHash.toLowerCase()}:$
 
 // Asks offckb for the devnet's system scripts every run instead of reading a cached copy:
 // cached copies went stale once already when the devnet drifted from the installed offckb.
-export function loadSystemScripts(): Map<string, KnownScript> {
-  const out = join(mkdtempSync(join(tmpdir(), "cde-")), "system-scripts.json");
-  execFileSync("offckb", ["system-scripts", "-o", out], { stdio: "ignore" });
-  return toMap(JSON.parse(readFileSync(out, "utf8")), "genesis");
+export function loadSystemScripts(file?: string): Map<string, KnownScript> {
+  if (file) return toMap(JSON.parse(readFileSync(file, "utf8")), "genesis");
+  const directory = mkdtempSync(join(tmpdir(), "cde-"));
+  try {
+    const out = join(directory, "system-scripts.json");
+    execFileSync("offckb", ["system-scripts", "-o", out], { stdio: "ignore" });
+    return toMap(JSON.parse(readFileSync(out, "utf8")), "genesis");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 // A project deployed with `offckb deploy` keeps its own scripts in deployment/scripts.json.

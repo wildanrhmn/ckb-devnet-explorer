@@ -477,7 +477,7 @@ export async function address(addr, q) {
 const empty = (text) => `<p class="card-empty" style="padding:28px 40px">${text}</p>`;
 
 // The CKB Explorer's faucet popover on address pages, here for devnet CKB.
-const faucetPopover = (addr) => addr.startsWith("ckt1") ? `<details class="pop">
+const faucetPopover = (addr) => addr.startsWith("ckt1") ? `<details class="pop" data-needs="faucet">
     <summary class="icon-btn" aria-label="Get devnet CKB" title="Get devnet CKB">${icon("faucet")}</summary>
     <div class="pop-menu">
       <button type="button" data-claim="${esc(addr)}" data-amount="10000">Claim 10,000 devnet CKB</button>
@@ -891,8 +891,10 @@ const MOLECULE_TYPES = ["Script", "OutPoint", "CellOutput", "CellInput", "Witnes
 
 // Like the CKB Explorer's Tools: each form answers below itself, without leaving the page.
 export async function tools(q) {
-  const tab = TOOL_TABS.some(([k]) => k === q.get("tab")) ? q.get("tab") : "address";
-  const tabBar = tabs(TOOL_TABS.map(([k, label]) => ({ label, href: `#/tools?tab=${k}`, current: k === tab })));
+  // Broadcast needs write access, which an embedded (read-only) explorer doesn't have.
+  const shown = TOOL_TABS.filter(([k]) => k !== "broadcast" || document.documentElement.dataset.broadcast !== "off");
+  const tab = shown.some(([k]) => k === q.get("tab")) ? q.get("tab") : "address";
+  const tabBar = tabs(shown.map(([k, label]) => ({ label, href: `#/tools?tab=${k}`, current: k === tab })));
   const forms = {
     address: `
       <form class="tool-form" data-tool="address">

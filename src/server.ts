@@ -19,7 +19,15 @@ const pageArgs = (url: URL) => {
 
 const LOCAL = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
-export function startServer(explorer: Explorer, faucet: Faucet, port: number, rpcUrl: string, projects: string[]) {
+// writable: false when embedded (offckb's plugin sandbox only forwards read RPC methods and has no
+// offckb binary), which turns off the faucet and broadcast.
+export type ServerOptions = { writable?: boolean };
+
+export function createExplorerServer(explorer: Explorer, faucet: Faucet, rpcUrl: string, projects: string[], options: ServerOptions = {}) {
+  const writable = options.writable ?? true;
+  const readOnly = "This explorer is running read-only (embedded in offckb), so it doesn't send transactions.";
+  // Optional extras must never take /api/info down: offckb's sandbox doesn't allow local_node_info.
+  const optional = async <T>(f: () => Promise<T>) => { try { return (await f()) ?? null; } catch { return null; } };
   // Claims belong to one chain: forget them when `offckb clean` resets it.
   let resets = 0;
   const faucetStatus = async () => {
@@ -35,7 +43,8 @@ export function startServer(explorer: Explorer, faucet: Faucet, port: number, rp
   const routes: Route[] = [
     [/^\/api\/info$/, async () => ({
       rpcUrl, projects, tip: await explorer.tip(), resets: explorer.index.resets,
-      node: await explorer.nodeVersion(), knowledgeSize: await explorer.knowledgeSize(),
+      node: await optional(() => explorer.nodeVersion()), knowledgeSize: await optional(() => explorer.knowledgeSize()),
+      features: { faucet: writable && faucet.hasAccount(), broadcast: writable, accounts: explorer.hasAccounts() },
     }), () => ""],
     [/^\/api\/home$/, () => explorer.home(), () => ""],
     [/^\/api\/blocks$/, (_, url) => explorer.blockList(...pageArgs(url)), () => ""],
@@ -53,7 +62,7 @@ export function startServer(explorer: Explorer, faucet: Faucet, port: number, rp
     [/^\/api\/spore\/(0x[0-9a-fA-F]{64})$/, (m) => explorer.spore(m[1]), (m) => `No spore ${m[1]} on this devnet.`],
     [/^\/api\/dao$/, (_, url) => explorer.dao(url.searchParams.get("tab") ?? "", ...pageArgs(url)), () => "This devnet has no Nervos DAO script."],
     [/^\/api\/accounts$/, () => explorer.accounts(), () => ""],
-    [/^\/api\/faucet$/, () => faucetStatus(), () => ""],
+    [/^\/api\/faucet$/, async () => (writable ? faucetStatus() : { ...(await faucetStatus()), available: false, reason: readOnly }), () => ""],
     [/^\/api\/charts$/, () => explorer.charts(), () => ""],
     [/^\/api\/tools\/address$/, (_, url) => tool(() => tools.address(q(url, "address").trim())), () => ""],
     [/^\/api\/tools\/script$/, (_, url) => tool(() => tools.script(q(url, "code_hash").trim(), q(url, "hash_type"), q(url, "args").trim() || "0x")), () => ""],
@@ -85,6 +94,8 @@ export function startServer(explorer: Explorer, faucet: Faucet, port: number, rp
         }
         try { return JSON.parse(raw); } catch { return "Send it as JSON."; }
       };
+      if (!writable && req.method === "POST" && (url.pathname === "/api/tools/broadcast" || url.pathname === "/api/faucet"))
+        return json(403, { error: readOnly });
       if (url.pathname === "/api/tools/broadcast" && req.method === "POST") {
         const body = await readJson(512 * 1024);
         if (typeof body === "string") return json(400, { error: body });
@@ -151,11 +162,17 @@ export function startServer(explorer: Explorer, faucet: Faucet, port: number, rp
     }
   });
 
-  // Keep the chain index warm so list pages don't wait for new blocks to be read.
+  // Keep upstream's index warm in both TCP and embedded bridge modes.
   const keepUp = () => explorer.index.sync().catch(() => {});
   keepUp();
-  setInterval(keepUp, 3000).unref();
+  const interval = setInterval(keepUp, 3000);
+  interval.unref();
+  server.once('close', () => clearInterval(interval));
+  return server;
+}
 
-  server.listen(port, () => console.log(`ckb-devnet-explorer running at http://localhost:${port}`));
+export function startServer(explorer: Explorer, faucet: Faucet, port: number, rpcUrl: string, projects: string[], host = "127.0.0.1", options: ServerOptions = {}) {
+  const server = createExplorerServer(explorer, faucet, rpcUrl, projects, options);
+  server.listen(port, host);
   return server;
 }

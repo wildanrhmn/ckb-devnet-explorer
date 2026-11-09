@@ -8,7 +8,7 @@
   <link rel="preload" href="/fonts/roboto-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
   <!-- Apply a saved theme before the first paint, so there's no flash of the other one. -->
-  <script>try { const t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {}</script>
+  <script src="/js/theme-early.js"></script>
 </head>
 <body>
   <a class="skip" href="#page">Skip to content</a>
@@ -43,12 +43,12 @@
         <div class="nav-menu">
           <button type="button" aria-expanded="false" aria-haspopup="true">Tools</button>
           <div class="nav-sub">
-            <a href="#/faucet" data-section="faucet">Faucet</a>
-            <a href="#/accounts" data-section="accounts">Test Accounts</a>
+            <a href="#/faucet" data-section="faucet" data-needs="faucet">Faucet</a>
+            <a href="#/accounts" data-section="accounts" data-needs="accounts">Test Accounts</a>
             <a href="#/tools?tab=address" data-section="tools">Address &amp; Script</a>
             <a href="#/tools?tab=hash" data-section="tools">Hasher</a>
             <a href="#/tools?tab=molecule" data-section="tools">Molecule Decoder</a>
-            <a href="#/tools?tab=broadcast" data-section="tools">Broadcast Tx</a>
+            <a href="#/tools?tab=broadcast" data-section="tools" data-needs="broadcast">Broadcast Tx</a>
           </div>
         </div>
       </nav>

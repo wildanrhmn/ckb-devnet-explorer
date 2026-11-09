@@ -17,7 +17,6 @@ export const FAUCET_ACCOUNT = 18;
 const ACCOUNT_INDEX = FAUCET_ACCOUNT;
 export const MIN_CKB = 61; // a plain secp256k1 cell needs 61 bytes, so 61 CKB
 export const MAX_CKB = 1_000_000;
-const DEVNET_PREFIX = { addressPrefix: "ckt" } as unknown as ccc.Client;
 
 type Account = { privkey: string; address: string };
 export type Claim = { hash: string; to: string; amount: number; time: number };
@@ -27,12 +26,18 @@ export class Faucet {
   private problem: string | null = null;
   private claims: Claim[] = [];
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly addressClient: ccc.Client;
 
-  constructor(private url: string) {
+  constructor(private url: string, private addressPrefix: "ckt" | "ckb" = "ckt") {
+    this.addressClient = { addressPrefix } as unknown as ccc.Client;
     const accounts = offckbAccounts();
     this.account = accounts?.[ACCOUNT_INDEX] ?? null;
     if (!accounts) this.problem = "Couldn't find offckb's test accounts, so the faucet is off.";
     else if (!this.account) this.problem = `offckb's account list has no account #${ACCOUNT_INDEX}.`;
+  }
+
+  hasAccount() {
+    return this.addressPrefix === "ckt" && !!this.account;
   }
 
   // Forget claims from a chain that `offckb clean` wiped.
@@ -56,7 +61,7 @@ export class Faucet {
     const reason = await this.devnetCheck();
     let balance: string | null = null;
     if (!reason && this.account) {
-      const script = (await ccc.Address.fromString(this.account.address, DEVNET_PREFIX)).script;
+      const script = (await ccc.Address.fromString(this.account.address, this.addressClient)).script;
       const res = await rpc<{ capacity: string } | null>(this.url, "get_cells_capacity", [
         { script: { code_hash: script.codeHash, hash_type: script.hashType, args: script.args }, script_type: "lock" },
       ]);
@@ -91,11 +96,11 @@ export class Faucet {
     if (!Number.isInteger(amount) || amount < MIN_CKB || amount > MAX_CKB)
       return `Choose a whole amount from ${MIN_CKB} to ${MAX_CKB.toLocaleString("en-US")} CKB.`;
     try {
-      await ccc.Address.fromString(to, DEVNET_PREFIX);
+      await ccc.Address.fromString(to, this.addressClient);
     } catch {
-      return "That isn't a devnet address. It should start with ckt1.";
+      return `That isn't an address for the configured ${this.addressPrefix} prefix.`;
     }
-    if (!to.startsWith("ckt1")) return "That isn't a devnet address. It should start with ckt1.";
+    if (!to.startsWith(`${this.addressPrefix}1`)) return `That address must start with ${this.addressPrefix}1.`;
     return null;
   }
 

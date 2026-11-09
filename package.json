@@ -1,6 +1,6 @@
 {
   "name": "ckb-devnet-explorer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A lightweight explorer for OffCKB devnets: no database, reads the node directly, names your own deployed scripts.",
   "type": "module",
   "bin": {
@@ -16,7 +16,8 @@
   "scripts": {
     "scan": "tsx src/cli.ts",
     "serve": "tsx src/cli.ts serve",
-    "check": "tsc"
+    "check": "tsc",
+    "test": "node --test tests/*.test.mjs"
   },
   "repository": {
     "type": "git",

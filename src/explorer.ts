@@ -62,9 +62,10 @@ type EconomicState = {
 const rpcScript = (s: RpcScript): RpcScript => ({ code_hash: s.code_hash, hash_type: s.hash_type, args: s.args });
 const scriptBytes = (s: RpcScript) => 32 + 1 + (s.args.length - 2) / 2;
 const toCcc = (s: RpcScript) => ccc.Script.from({ codeHash: s.code_hash, hashType: s.hash_type as ccc.HashType, args: s.args });
+export type AddressPrefix = "ckt" | "ckb";
 // Address encoding only needs the prefix, not a network connection.
-const DEVNET_PREFIX = { addressPrefix: "ckt" } as unknown as ccc.Client;
-const addressOf = (s: RpcScript) => ccc.Address.fromScript(toCcc(s), DEVNET_PREFIX).toString();
+const clientFor = (prefix: AddressPrefix) => ({ addressPrefix: prefix }) as unknown as ccc.Client;
+const addressOf = (s: RpcScript, client: ccc.Client) => ccc.Address.fromScript(toCcc(s), client).toString();
 
 // Serialized size of a transaction as the node counts it for fees (the extra 4 bytes are its
 // offset in the block). CCC can't take the RPC's snake_case JSON directly, hence the mapping.
@@ -94,9 +95,11 @@ export class Explorer {
   // Full blocks for detail pages. Small, since the index keeps the summaries.
   private blocks = new Map<number, RpcBlock | null>();
   private tags = new Map<string, string[]>();
+  private readonly addressClient: ccc.Client;
   readonly index: ChainIndex;
 
-  constructor(private url: string, private resolver: Resolver) {
+  constructor(private url: string, private resolver: Resolver, private chainPrefix: AddressPrefix = "ckt") {
+    this.addressClient = clientFor(chainPrefix);
     this.index = new ChainIndex(url, (b) => this.summarize(b as unknown as FullBlock), () => {
       this.blocks.clear();
       this.tags.clear();
@@ -131,6 +134,12 @@ export class Explorer {
     const header = await rpc<{ dao: string; number: string }>(this.url, "get_tip_header");
     const u = Buffer.from(header.dao.slice(2), "hex").readBigUInt64LE(24) - this.burnt;
     return { bytes: Number(u / 100_000_000n), block: num(header.number) };
+  }
+
+  // Whether offckb's test account list could be read (it can't inside offckb's plugin sandbox).
+  hasAccounts() {
+    // offckb's bundled test accounts belong to its pure ckt devnet, not a mainnet fork.
+    return this.chainPrefix === "ckt" && !!offckbAccounts();
   }
 
   // The CKB version the devnet node runs, e.g. "0.208.0 (585395c 2026-07-14)".
@@ -239,7 +248,7 @@ export class Explorer {
   // ---- lists ----------------------------------------------------------------------------
 
   private blockRow(b: BlockSummary) {
-    return { ...b, miner: b.miner ? addressOf(b.miner) : null };
+    return { ...b, miner: b.miner ? addressOf(b.miner, this.addressClient) : null };
   }
 
   async blockList(pageNo: number, size: number) {
@@ -392,7 +401,7 @@ export class Explorer {
       epoch: epochOf(h.epoch),
       confirmations: tip - n,
       tip,
-      miner: cellbase ? addressOf(cellbase.lock) : null,
+      miner: cellbase ? addressOf(cellbase.lock, this.addressClient) : null,
       minerMessage: cellbase?.message || null,
       reward,
       finalizedIn: reward ? null : Math.max(0, n + 11 - tip),
@@ -471,7 +480,7 @@ export class Explorer {
 
   async address(address: string, tab: string, pageNo: number, size: number) {
     const tip = await this.tip();
-    const parsed = await ccc.Address.fromString(address, DEVNET_PREFIX);
+    const parsed = await ccc.Address.fromString(address, this.addressClient);
     const lock: RpcScript = { code_hash: parsed.script.codeHash, hash_type: parsed.script.hashType, args: parsed.script.args };
     const key = { script: lock, script_type: "lock" };
 
@@ -611,7 +620,7 @@ export class Explorer {
     const list = offckbAccounts();
     if (!list) return { available: false, accounts: [] };
     const accounts = await Promise.all(list.map(async (a) => {
-      const parsed = (await ccc.Address.fromString(a.address, DEVNET_PREFIX)).script;
+      const parsed = (await ccc.Address.fromString(a.address, this.addressClient)).script;
       const lock = { code_hash: parsed.codeHash, hash_type: parsed.hashType, args: parsed.args };
       const key = { script: lock, script_type: "lock" };
       const [capacity, cells, txs] = await Promise.all([
@@ -942,7 +951,7 @@ export class Explorer {
       if (script) return { route: `#/script/${h}/${script.hashType}` };
       // A script hash: a lock goes to its address; a type to its token, or its script page.
       const seen = this.scriptHashes.get(h);
-      if (seen?.role === "lock") return { route: `#/address/${addressOf(seen.script)}` };
+      if (seen?.role === "lock") return { route: `#/address/${addressOf(seen.script, this.addressClient)}` };
       if (seen?.role === "type") {
         if ((await this.udtTokens()).has(h)) return { route: `#/token/${h}` };
         return { route: `#/script/${seen.script.code_hash}/${seen.script.hash_type}?tab=type` };
@@ -1046,7 +1055,7 @@ export class Explorer {
       capacity: BigInt(out.capacity).toString(),
       lock,
       type,
-      address: addressOf(out.lock),
+      address: addressOf(out.lock, this.addressClient),
       dataLength,
       dataPreview: data.slice(0, 2 + 512),
       dataHash: hashOfData,

@@ -19,12 +19,13 @@ const pageArgs = (url: URL) => {
 
 const LOCAL = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
-// writable: false when embedded (offckb's plugin sandbox only forwards read RPC methods and has no
-// offckb binary), which turns off the faucet and broadcast.
-export type ServerOptions = { writable?: boolean };
+// writable: false when embedded (offckb only forwards read RPC methods and has no offckb
+// binary). downloads: false when the host CSP disallows browser downloads.
+export type ServerOptions = { writable?: boolean; downloads?: boolean };
 
 export function createExplorerServer(explorer: Explorer, faucet: Faucet, rpcUrl: string, projects: string[], options: ServerOptions = {}) {
   const writable = options.writable ?? true;
+  const downloads = options.downloads ?? true;
   const readOnly = "This explorer is running read-only (embedded in offckb), so it doesn't send transactions.";
   // Optional extras must never take /api/info down: offckb's sandbox doesn't allow local_node_info.
   const optional = async <T>(f: () => Promise<T>) => { try { return (await f()) ?? null; } catch { return null; } };
@@ -44,7 +45,7 @@ export function createExplorerServer(explorer: Explorer, faucet: Faucet, rpcUrl:
     [/^\/api\/info$/, async () => ({
       rpcUrl, projects, tip: await explorer.tip(), resets: explorer.index.resets,
       node: await optional(() => explorer.nodeVersion()), knowledgeSize: await optional(() => explorer.knowledgeSize()),
-      features: { faucet: writable && faucet.hasAccount(), broadcast: writable, accounts: explorer.hasAccounts() },
+      features: { faucet: writable && faucet.hasAccount(), broadcast: writable, accounts: explorer.hasAccounts(), downloads },
     }), () => ""],
     [/^\/api\/home$/, () => explorer.home(), () => ""],
     [/^\/api\/blocks$/, (_, url) => explorer.blockList(...pageArgs(url)), () => ""],

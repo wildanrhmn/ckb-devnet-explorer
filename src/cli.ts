@@ -3,9 +3,9 @@ import { parseArgs } from "node:util";
 import { getBlock, getTipNumber, type RpcTransaction } from "./rpc.ts";
 import { loadProjectScripts, loadSystemScripts } from "./scripts.ts";
 import { Resolver } from "./resolver.ts";
-import { Explorer } from "./explorer.ts";
+import { Explorer, type AddressPrefix } from "./explorer.ts";
 import { createExplorerServer, startServer } from "./server.ts";
-import { serveBridge } from "./bridge.ts";
+import { loadBridgeConfig, serveBridge } from "./bridge.ts";
 import { Faucet } from "./faucet.ts";
 
 const { values, positionals } = parseArgs({
@@ -18,6 +18,9 @@ const { values, positionals } = parseArgs({
     host: { type: "string", default: "127.0.0.1" },
     "system-scripts": { type: "string" },
     bridge: { type: "string" },
+    "read-only": { type: "boolean", default: false },
+    "expected-genesis": { type: "string" },
+    "address-prefix": { type: "string", default: "ckt" },
     json: { type: "boolean", default: false },
     "integration-info": { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
@@ -25,7 +28,7 @@ const { values, positionals } = parseArgs({
 });
 
 if (values["integration-info"]) {
-  console.log(JSON.stringify({ apiVersion: 1, capabilities: ["system-scripts", "host", "bridge", "json-ready"] }));
+  console.log(JSON.stringify({ apiVersion: 1, capabilities: ["system-scripts", "host", "bridge", "json-ready", "read-only", "genesis-check", "address-prefix", "rpc-queue"] }));
   process.exit(0);
 }
 
@@ -42,7 +45,10 @@ Options:
   --port <n>        web port for serve (default: 7070)
   --host <address>  bind address for serve (default: 127.0.0.1)
   --system-scripts <file>  read the offckb-format scripts JSON instead of calling offckb
-  --bridge <path>   serve over outbound Unix-socket connections instead of opening a TCP port
+  --bridge <file>   serve over authenticated reverse channels described by a JSON config
+  --read-only      disable faucet and transaction broadcast even without a bridge
+  --expected-genesis <hash>  refuse to serve unless RPC genesis matches this hash
+  --address-prefix <ckt|ckb>  address prefix (default: ckt; use ckb for a mainnet fork)
   --json           emit one versioned ready record for serve; diagnostics go to stderr
   --integration-info  print the public CLI integration version and capabilities, without RPC access
   --txs <n>         how many transactions the terminal version prints (default: 10)
@@ -54,6 +60,11 @@ Needs a running devnet (\`offckb node\`), plus offckb on PATH unless --system-sc
 
 const url = values.rpc!;
 const projects = values.project!;
+const addressPrefix = values["address-prefix"] as AddressPrefix;
+if (!["ckt", "ckb"].includes(addressPrefix)) throw new Error("--address-prefix must be ckt or ckb");
+const expectedGenesis = values["expected-genesis"];
+if (expectedGenesis && !/^0x[0-9a-fA-F]{64}$/.test(expectedGenesis)) throw new Error("--expected-genesis must be a 32-byte hex hash");
+const bridge = values.bridge ? loadBridgeConfig(values.bridge) : undefined;
 let known: ReturnType<typeof loadSystemScripts>;
 try {
   known = loadSystemScripts(values["system-scripts"]);
@@ -70,28 +81,39 @@ for (const dir of projects) {
 }
 const resolver = new Resolver(known);
 
+if (expectedGenesis) {
+  const genesis = await getBlock(url, 0);
+  const actual = genesis?.header.hash;
+  if (actual?.toLowerCase() !== expectedGenesis.toLowerCase())
+    throw new Error(`RPC genesis mismatch: expected ${expectedGenesis}, got ${actual ?? "no genesis block"}`);
+}
+
 if (positionals[0] === "serve") {
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("--port must be an integer from 0 to 65535");
   console.error(`known scripts: ${known.size - projectCount} genesis + ${projectCount} from projects`);
-  const ready = (address?: string) => {
-    if (values.json) console.log(JSON.stringify({ ok: true, apiVersion: 1, ...(address ? { url: address } : { transport: "bridge" }) }));
-    else console.error(address ? `ckb-devnet-explorer running at ${address}` : "ckb-devnet-explorer bridge ready");
+  const ready = (result: { url?: string; transport?: string }) => {
+    if (values.json) console.log(JSON.stringify({ ok: true, apiVersion: 1, ...result }));
+    else console.error(result.url ? `ckb-devnet-explorer running at ${result.url}` : "ckb-devnet-explorer bridge ready");
   };
-  const explorer = new Explorer(url, resolver);
-  const faucet = new Faucet(url);
-  const server = values.bridge
-    ? createExplorerServer(explorer, faucet, url, projects, { writable: false })
-    : startServer(explorer, faucet, port, url, projects, values.host);
-  const stopBridge = values.bridge ? serveBridge(server, values.bridge, () => ready()) : undefined;
+  const explorer = new Explorer(url, resolver, addressPrefix);
+  const faucet = new Faucet(url, addressPrefix);
+  // Reverse-hosted explorers are read-only because the host only supplies read RPC. Its CSP
+  // may also disallow downloads; Copy JSON and the Raw view remain available.
+  const options = { writable: !bridge && !values["read-only"], downloads: !bridge };
+  const server = bridge
+    ? createExplorerServer(explorer, faucet, url, projects, options)
+    : startServer(explorer, faucet, port, url, projects, values.host, options);
+  let stopBridge: (() => void) | undefined;
   const stop = () => { stopBridge?.(); server.close(); server.closeAllConnections(); };
-  if (!values.bridge) server.once("listening", () => {
-    const address = server.address();
-    if (address && typeof address !== "string") ready(`http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}`);
-  });
   server.once("error", (error: NodeJS.ErrnoException) => {
     console.error(JSON.stringify({ ok: false, code: "SERVER_FAILED", message: error.code || "Server failed" }));
     stop(); process.exitCode = 1;
+  });
+  if (bridge) stopBridge = serveBridge(server, bridge, () => ready({ ...(bridge.url ? { url: bridge.url } : {}), transport: bridge.transport }));
+  else server.once("listening", () => {
+    const address = server.address();
+    if (address && typeof address !== "string") ready({ url: `http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}` });
   });
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
     process.once(signal, () => { stop(); process.exitCode = code; });

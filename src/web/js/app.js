@@ -84,7 +84,7 @@ async function render({ quiet = false } = {}) {
 // ---- features the server offers (embedded in offckb it runs read-only) ----
 
 function applyFeatures(features = {}) {
-  for (const name of ["faucet", "broadcast", "accounts"])
+  for (const name of ["faucet", "broadcast", "accounts", "downloads"])
     document.documentElement.dataset[name] = features[name] === false ? "off" : "on";
 }
 

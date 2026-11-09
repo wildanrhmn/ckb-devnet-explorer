@@ -203,7 +203,7 @@ export async function transaction(hash) {
   if (tx.rejected) return rejected(tx);
   const inBlock = tx.blockNumber != null;
   const actions = iconBtn("json", "Copy raw JSON", `data-copy-url="/api/tx/${tx.hash}/raw"`)
-    + iconLink("download", "Download raw JSON", `href="/api/tx/${tx.hash}/raw" download="${tx.hash}.json"`);
+    + `<span data-needs="downloads">${iconLink("download", "Download raw JSON", `href="/api/tx/${tx.hash}/raw" download="${tx.hash}.json"`)}</span>`;
 
   const deps = tx.cellDeps.map((d) => `<tr>
       <td>${outPointLink(d)}</td>

@@ -138,7 +138,10 @@ npx github:wildanrhmn/ckb-devnet-explorer serve [options]
 | `--host <address>` | `127.0.0.1` | Bind address; explicitly choose another address to expose the server. |
 | `--system-scripts <file>` | invoke offckb | Read an offckb-format system-scripts JSON file; never invoke offckb when supplied. |
 | `--json` | off | Emit one integration API v1 ready record for `serve`; diagnostics remain on stderr. |
-| `--bridge <path>` | off | Serve HTTP over outbound connections to an embedder's Unix socket instead of listening on TCP. |
+| `--bridge <file>` | off | Serve HTTP over authenticated reverse channels described by a JSON file instead of listening on TCP. |
+| `--read-only` | off | Disable faucet and transaction broadcast without enabling bridge mode. |
+| `--expected-genesis <hash>` | off | Refuse to start unless the RPC node's genesis hash matches. |
+| `--address-prefix <ckt\|ckb>` | `ckt` | Address prefix; use `ckb` for a mainnet fork. |
 | `--integration-info` | off | Print integration API version and capabilities offline. |
 
 Without `serve` it prints the latest transactions to the terminal:
@@ -167,7 +170,7 @@ npm run serve -- --project ~/path/to/your-ckb-project
 ### Public CLI integration contract (v1)
 
 Embedders should invoke the declared `ckb-devnet-explorer` bin, not import `src/*` or inspect the tsx export map.
-Use `--integration-info` to check `apiVersion: 1` and the `host`, `system-scripts`, `bridge`, `json-ready` capabilities.
+Use `--integration-info` to check `apiVersion: 1` and the `host`, `system-scripts`, `bridge`, `json-ready`, `read-only`, `genesis-check`, `address-prefix` and `rpc-queue` capabilities.
 These flags and the v1 record shape form the public compatibility contract; additions may be made within v1, while breaking changes require a new integration API version.
 
 ```sh
@@ -179,17 +182,31 @@ The single stdout record is `{ "ok": true, "apiVersion": 1, "url": "http://127.0
 Startup failure exits nonzero without emitting readiness. POSIX SIGINT/SIGTERM/SIGHUP close the server and exit with 130/143/129.
 An explicit scripts file is authoritative: an unreadable or invalid file fails rather than falling back to a PATH command.
 
-For a sandbox without TCP listening rights, `--bridge /path/to/embedder.sock` makes outbound Unix connections to the embedder instead.
-The embedder accepts multiple connections and sends ordinary HTTP/1.1 requests over each; use `Connection: close` for one request per connection.
-The process reconnects used/closed channels until shutdown. Readiness becomes `{ "ok": true, "apiVersion": 1, "transport": "bridge" }`.
-The embedder owns the external listener and its policy. Explorer never follows an embedder-controlled request to a different socket path.
-This mode requires a local Unix-socket-capable platform and fails if no bridge connects within five seconds.
+For a sandbox without TCP listening rights, the adapter writes a short-lived bridge JSON config and passes `--bridge <file>`. Keeping the token in this file avoids exposing it in argv:
 
-In bridge mode the explorer runs read-only: offckb's sandbox only forwards read RPC methods and has no
-`offckb` binary, so the faucet and transaction broadcast are switched off, and pages hide them.
-`/api/info` reports which of `faucet`, `broadcast` and `accounts` are available.
+```json
+{
+  "apiVersion": 1,
+  "transport": "proxy-connect-v1",
+  "endpoint": "127.0.0.1:28115",
+  "token": "per-run-random-token",
+  "url": "http://127.0.0.1:7070"
+}
+```
 
-Run `npm test` for the CLI contract checks.
+`transport` is `proxy-connect-v1` for offckb's OS sandbox or `tcp-v1` for trusted execution. The former opens an HTTP CONNECT through the sandbox-provided `HTTP_PROXY`, including its proxy credentials; the latter connects directly to `endpoint`. In both modes Explorer then sends `offckb-http/1 <token>\n`, waits for `OK\n`, and only then attaches the channel to its HTTP server and announces readiness. Partial frames and request bytes following the acknowledgement are handled.
+
+The embedder accepts multiple connections and sends ordinary HTTP/1.1 requests over each; use `Connection: close` for one request per connection. Explorer reconnects used/closed channels until shutdown and fails if no channel authenticates within five seconds. Readiness is `{ "ok": true, "apiVersion": 1, "url": "http://127.0.0.1:7070", "transport": "proxy-connect-v1" }` when the config supplies a public URL.
+
+For offckb, the adapter creates this config from `context.sandbox.http`, passes `context.devnet.rpcUrl`, `context.devnet.systemScriptsFile` and `context.cwd`, and keeps the token out of logs. It declares only the capabilities it needs (`devnet-read`, `serve`, and optionally `project-deployment`), which the user must explicitly grant. This Explorer package remains the application/provider; the offckb manifest and context translation belong to its separately released adapter.
+
+The adapter must reject an unknown chain or a missing scripts/genesis snapshot. Pass `--expected-genesis <context.devnet.genesisHash>` so Explorer independently rejects an RPC endpoint belonging to a different chain, and `--address-prefix <context.devnet.addressPrefix>` (`ckb` for a mainnet fork, otherwise `ckt`).
+
+Bridge mode always runs read-only: offckb only forwards read RPC methods and has no `offckb` binary, so the faucet and transaction broadcast are switched off, and pages hide them. `--read-only` provides the same server protection for a directly hosted instance. `/api/info` reports `faucet`, `broadcast`, `accounts` and `downloads`; downloads are hidden in bridge mode because offckb's CSP does not allow them, while Copy JSON and Raw remain available.
+
+All JSON-RPC calls share a four-request scheduler, transient 429/502/503/504 responses receive bounded retries, and batches are limited to 10 calls. This keeps unbounded page rendering within offckb's gateway limits rather than weakening the host's resource policy.
+
+Run `npm test` for the CLI and RPC contract checks.
 
 ## How it works
 
@@ -200,8 +217,7 @@ browser ──HTTP──▶ one Node process ──JSON-RPC──▶ your devnet
 ```
 
 There's no database. Detail pages ask the node for exactly what they need. For lists and totals, the server
-keeps a small in-memory index of blocks and transactions: it reads the whole chain in batches (4,500 blocks
-take about 0.3 s), follows the tip, and rebuilds itself if the chain is reset. Tokens, NFTs and DAO cells come
+keeps a small in-memory index of blocks and transactions: it reads the whole chain in bounded batches, follows the tip, and rebuilds itself if the chain is reset. Tokens, NFTs and DAO cells come
 from the node's indexer by type script. The front end is plain HTML, CSS and JavaScript modules, with no
 build step, and the fonts are bundled, so it works offline.
 

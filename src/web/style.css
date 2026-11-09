@@ -157,7 +157,8 @@ code { font: 13px var(--mono); background: var(--input); padding: 1px 5px; borde
 /* Features the server doesn't offer (read-only when embedded in offckb) are hidden. */
 html[data-faucet="off"] [data-needs="faucet"],
 html[data-broadcast="off"] [data-needs="broadcast"],
-html[data-accounts="off"] [data-needs="accounts"] { display: none !important; }
+html[data-accounts="off"] [data-needs="accounts"],
+html[data-downloads="off"] [data-needs="downloads"] { display: none !important; }
 
 /* ---------- header ---------- */
 .topbar { position: sticky; top: 0; z-index: 20; background: var(--header); color: #fff; }

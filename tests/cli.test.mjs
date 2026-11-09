@@ -10,9 +10,10 @@ import { fileURLToPath } from 'node:url';
 
 const bin = fileURLToPath(new URL('../bin/ckb-devnet-explorer.js', import.meta.url));
 const env = { ...process.env, PATH: '', NODE_USE_ENV_PROXY: '0' };
+const genesis = `0x${'11'.repeat(32)}`;
 
-function run(args) {
-  const child = spawn(process.execPath, [bin, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+function run(args, environment = {}) {
+  const child = spawn(process.execPath, [bin, ...args], { env: { ...env, ...environment }, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   child.stdout.on('data', (value) => { stdout += value; });
   child.stderr.on('data', (value) => { stderr += value; });
@@ -27,9 +28,124 @@ function run(args) {
     });
     child.once('close', () => reject(new Error(stderr || 'Exited before ready')));
   });
-  // A test that expects failure does not wait for ready.
   ready.catch(() => {});
   return { child, closed, ready };
+}
+
+async function startRpc() {
+  let firstGenesis = true;
+  const server = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw);
+    const result = (call) => {
+      if (call.method === 'get_block_by_number') {
+        if (call.params[0] === '0x0' && firstGenesis) {
+          firstGenesis = false;
+          return { header: { number: '0x0', hash: genesis }, transactions: [] };
+        }
+        return null;
+      }
+      if (call.method === 'get_blockchain_info') return { chain: 'ckb_dev', difficulty: '0x1' };
+      return '0x0';
+    };
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(Array.isArray(body) ? body.map((call) => ({ jsonrpc: '2.0', id: call.id, result: result(call) })) : { jsonrpc: '2.0', id: body.id, result: result(body) }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { server, url: `http://127.0.0.1:${server.address().port}`, close: () => { server.closeAllConnections(); server.close(); } };
+}
+
+function scriptsFile(root) {
+  const file = path.join(root, 'scripts.json');
+  fs.writeFileSync(file, JSON.stringify({ devnet: {} }));
+  return file;
+}
+
+function bridgeFile(root, config) {
+  const file = path.join(root, 'bridge.json');
+  fs.writeFileSync(file, JSON.stringify({ apiVersion: 1, ...config }));
+  return file;
+}
+
+async function startRelay(token, { fragmentedAck = false, piggybackRequest = false } = {}) {
+  const authenticated = [];
+  const sockets = new Set();
+  let resolvePiggyback, rejectPiggyback;
+  const piggyback = new Promise((resolve, reject) => { resolvePiggyback = resolve; rejectPiggyback = reject; });
+  piggyback.catch(() => {});
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    let received = '';
+    const authenticate = (chunk) => {
+      received += chunk.toString();
+      if (!received.includes('\n')) return;
+      socket.removeListener('data', authenticate);
+      assert.equal(received, `offckb-http/1 ${token}\n`);
+      authenticated.push(socket);
+      if (piggybackRequest && authenticated.length === 1) {
+        let raw = '';
+        socket.on('data', (value) => { raw += value.toString(); });
+        socket.once('end', () => resolvePiggyback(raw));
+        socket.once('error', rejectPiggyback);
+        const request = 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n';
+        if (fragmentedAck) {
+          socket.write('O');
+          setImmediate(() => socket.write(`K\n${request}`));
+        } else socket.write(`OK\n${request}`);
+        return;
+      }
+      if (fragmentedAck) {
+        socket.write('O');
+        setImmediate(() => socket.write('K\n'));
+      } else socket.write('OK\n');
+    };
+    socket.on('data', authenticate);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const used = new Set();
+  return {
+    port: server.address().port,
+    piggyback,
+    async request(pathname, { method = 'GET', body = '' } = {}) {
+      const socket = authenticated.find((candidate) => !used.has(candidate) && !candidate.destroyed && !candidate.readableEnded && !candidate.writableEnded);
+      assert.ok(socket, 'an authenticated reverse channel is available');
+      used.add(socket);
+      const response = new Promise((resolve, reject) => {
+        let raw = '';
+        socket.on('data', (value) => { raw += value.toString(); });
+        socket.once('end', () => resolve(raw));
+        socket.once('error', reject);
+        setTimeout(() => reject(new Error('relay request timed out')), 5000).unref();
+      });
+      socket.write(`${method} ${pathname} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+      const raw = await response;
+      const split = raw.indexOf('\r\n\r\n');
+      assert.ok(split >= 0, raw);
+      const headers = raw.slice(0, split);
+      let payload = raw.slice(split + 4);
+      if (/transfer-encoding: chunked/i.test(headers)) {
+        let decoded = '';
+        while (payload) {
+          const end = payload.indexOf('\r\n');
+          const size = Number.parseInt(payload.slice(0, end), 16);
+          if (!size) break;
+          decoded += payload.slice(end + 2, end + 2 + size);
+          payload = payload.slice(end + 4 + size);
+        }
+        payload = decoded;
+      }
+      return { status: Number(headers.match(/^HTTP\/1\.1 (\d+)/)?.[1]), body: payload };
+    },
+    close: () => { for (const socket of sockets) socket.destroy(); server.close(); },
+  };
+}
+
+async function stop(app, code = 143) {
+  app.child.kill('SIGTERM');
+  const result = await app.closed;
+  if (process.platform !== 'win32') assert.equal(result.code, code, result.stderr);
+  return result;
 }
 
 test('integration-info is a public offline contract and does not require offckb', () => {
@@ -37,35 +153,35 @@ test('integration-info is a public offline contract and does not require offckb'
   assert.equal(result.status, 0, result.stderr);
   const info = JSON.parse(result.stdout);
   assert.equal(info.apiVersion, 1);
-  for (const name of ['host', 'system-scripts', 'bridge', 'json-ready']) assert.ok(info.capabilities.includes(name));
+  for (const name of ['host', 'system-scripts', 'bridge', 'json-ready', 'read-only', 'genesis-check', 'address-prefix', 'rpc-queue']) assert.ok(info.capabilities.includes(name));
 });
 
-test('public serve options consume scripts without PATH and bind loopback with one ready record', { timeout: 10000 }, async () => {
+test('public serve options consume scripts without PATH, verify genesis and bind loopback', { timeout: 10000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cde-'));
-  const scripts = path.join(root, 'scripts.json');
-  fs.writeFileSync(scripts, JSON.stringify({ devnet: {} }));
-  const rpc = http.createServer(async (req, res) => {
-    let raw = ''; for await (const chunk of req) raw += chunk;
-    const body = JSON.parse(raw);
-    const result = (call) => ({ jsonrpc: '2.0', id: call.id, result: call.method === 'get_block_by_number' ? null : '0x0' });
-    res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(Array.isArray(body) ? body.map(result) : result(body)));
-  });
-  await new Promise((resolve) => rpc.listen(0, '127.0.0.1', resolve));
-  const url = `http://127.0.0.1:${rpc.address().port}`;
-  const app = run(['serve', '--system-scripts', scripts, '--rpc', url, '--project', root, '--port', '0', '--json']);
+  const rpc = await startRpc();
+  const app = run(['serve', '--system-scripts', scriptsFile(root), '--rpc', rpc.url, '--project', root, '--port', '0', '--expected-genesis', genesis, '--address-prefix', 'ckt', '--json']);
   try {
     const ready = await app.ready;
     assert.equal(ready.apiVersion, 1);
     assert.match(ready.url, /^http:\/\/127\.0\.0\.1:/);
     assert.equal((await fetch(ready.url)).status, 200);
-    assert.equal((await (await fetch(ready.url + '/api/info')).json()).rpcUrl, url);
+    const info = await (await fetch(ready.url + '/api/info')).json();
+    assert.equal(info.rpcUrl, rpc.url);
+    assert.equal(info.features.downloads, true);
+    assert.equal((await stop(app)).stdout.trim().split('\n').length, 1);
   } finally {
-    app.child.kill('SIGTERM');
-    const exit = await app.closed;
-    if (process.platform !== 'win32') assert.equal(exit.code, 143);
-    assert.equal(exit.stdout.trim().split('\n').length, 1);
-    rpc.closeAllConnections(); rpc.close(); fs.rmSync(root, { recursive: true, force: true });
+    app.child.kill('SIGKILL'); rpc.close(); fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('a genesis mismatch fails before readiness', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cde-'));
+  const rpc = await startRpc();
+  try {
+    const app = run(['serve', '--system-scripts', scriptsFile(root), '--rpc', rpc.url, '--expected-genesis', `0x${'22'.repeat(32)}`, '--json']);
+    const result = await app.closed;
+    assert.notEqual(result.code, 0); assert.equal(result.stdout, ''); assert.match(result.stderr, /genesis mismatch/i);
+  } finally { rpc.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('invalid explicit scripts fail without falling back to offckb on PATH', async () => {
@@ -80,7 +196,7 @@ test('invalid explicit scripts fail without falling back to offckb on PATH', asy
 
 test('port conflicts fail on stderr without a ready record', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cde-'));
-  const scripts = path.join(root, 'scripts.json'); fs.writeFileSync(scripts, '{}');
+  const scripts = scriptsFile(root);
   const taken = net.createServer(); await new Promise((resolve) => taken.listen(0, '127.0.0.1', resolve));
   try {
     const app = run(['serve', '--system-scripts', scripts, '--port', String(taken.address().port), '--json']);
@@ -89,30 +205,73 @@ test('port conflicts fail on stderr without a ready record', async () => {
   } finally { taken.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('bridge serves HTTP on outbound connections and closes them on shutdown', { skip: process.platform === 'win32', timeout: 10000 }, async () => {
+test('tcp-v1 authenticates before ready, serves read-only HTTP and reconnects', { timeout: 10000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cde-'));
-  const scripts = path.join(root, 'scripts.json'); fs.writeFileSync(scripts, '{}');
-  const sockets = new Set();
-  const bridge = net.createServer((socket) => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
-  const socketPath = path.join(root, 'bridge.sock'); await new Promise((resolve) => bridge.listen(socketPath, resolve));
-  const app = run(['serve', '--system-scripts', scripts, '--bridge', socketPath, '--json']);
+  const token = 'tcp-test-token';
+  const relay = await startRelay(token, { fragmentedAck: true, piggybackRequest: true });
+  const rpc = await startRpc();
+  const config = bridgeFile(root, { transport: 'tcp-v1', endpoint: `127.0.0.1:${relay.port}`, token, url: 'http://127.0.0.1:7070' });
+  const app = run(['serve', '--system-scripts', scriptsFile(root), '--rpc', rpc.url, '--project', root, '--bridge', config, '--json']);
   try {
-    assert.equal((await app.ready).transport, 'bridge');
-    const socket = sockets.values().next().value;
-    const response = new Promise((resolve) => { let data = ''; socket.on('data', (value) => { data += value; }); socket.once('end', () => resolve(data)); });
-    socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
-    assert.match(await response, /^HTTP\/1\.1 200/);
+    const ready = await app.ready;
+    assert.deepEqual(ready, { ok: true, apiVersion: 1, url: 'http://127.0.0.1:7070', transport: 'tcp-v1' });
+    assert.match(await relay.piggyback, /^HTTP\/1\.1 200/);
+    assert.equal((await relay.request('/')).status, 200);
+    const info = JSON.parse((await relay.request('/api/info')).body);
+    assert.equal(info.features.faucet, false);
+    assert.equal(info.features.broadcast, false);
+    assert.equal(info.features.downloads, false);
+    const write = await relay.request('/api/faucet', { method: 'POST', body: '{}' });
+    assert.equal(write.status, 403);
+    await stop(app);
   } finally {
-    app.child.kill('SIGTERM'); const result = await app.closed; assert.equal(result.code, 143);
-    for (const socket of sockets) socket.destroy(); bridge.close(); fs.rmSync(root, { recursive: true, force: true });
+    app.child.kill('SIGKILL'); relay.close(); rpc.close(); fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('an unavailable bridge fails with no ready record', { skip: process.platform === 'win32', timeout: 10000 }, async () => {
+test('proxy-connect-v1 uses proxy credentials and the authenticated relay protocol', { timeout: 10000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cde-'));
-  const scripts = path.join(root, 'scripts.json'); fs.writeFileSync(scripts, '{}');
+  const token = 'proxy-test-token';
+  const relay = await startRelay(token);
+  const endpoint = `127.0.0.1:${relay.port}`;
+  const seen = [];
+  const proxy = http.createServer();
+  proxy.on('connect', (req, client, head) => {
+    seen.push({ path: req.url, authorization: req.headers['proxy-authorization'] });
+    const upstream = net.connect(relay.port, '127.0.0.1');
+    upstream.once('connect', () => {
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) upstream.write(head);
+      client.pipe(upstream); upstream.pipe(client);
+    });
+    upstream.on('error', () => client.destroy());
+    client.on('error', () => upstream.destroy());
+  });
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  const rpc = await startRpc();
+  const config = bridgeFile(root, { transport: 'proxy-connect-v1', endpoint, token, url: 'http://127.0.0.1:7070' });
+  const proxyUrl = `http://user:pass@127.0.0.1:${proxy.address().port}`;
+  const app = run(['serve', '--system-scripts', scriptsFile(root), '--rpc', rpc.url, '--bridge', config, '--json'], { HTTP_PROXY: proxyUrl });
   try {
-    const app = run(['serve', '--system-scripts', scripts, '--bridge', path.join(root, 'missing.sock'), '--json']);
+    assert.equal((await app.ready).transport, 'proxy-connect-v1');
+    assert.equal((await relay.request('/')).status, 200);
+    assert.ok(seen.length > 0);
+    assert.ok(seen.every((call) => call.path === endpoint));
+    assert.ok(seen.every((call) => call.authorization === `Basic ${Buffer.from('user:pass').toString('base64')}`));
+    await stop(app);
+  } finally {
+    app.child.kill('SIGKILL'); relay.close(); rpc.close(); proxy.closeAllConnections(); proxy.close(); fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an unavailable authenticated bridge fails with no ready record', { timeout: 10000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cde-'));
+  const available = net.createServer(); await new Promise((resolve) => available.listen(0, '127.0.0.1', resolve));
+  const port = available.address().port;
+  await new Promise((resolve) => available.close(resolve));
+  const config = bridgeFile(root, { transport: 'tcp-v1', endpoint: `127.0.0.1:${port}`, token: 'unused' });
+  try {
+    const app = run(['serve', '--system-scripts', scriptsFile(root), '--bridge', config, '--json']);
     const result = await app.closed;
     assert.equal(result.code, 1); assert.equal(result.stdout, ''); assert.match(result.stderr, /BRIDGE_UNAVAILABLE/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

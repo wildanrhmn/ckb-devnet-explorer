@@ -21,11 +21,12 @@ const LOCAL = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
 // writable: false when embedded (offckb only forwards read RPC methods and has no offckb
 // binary). downloads: false when the host CSP disallows browser downloads.
-export type ServerOptions = { writable?: boolean; downloads?: boolean };
+export type ServerOptions = { writable?: boolean; downloads?: boolean; keepAlive?: boolean };
 
 export function createExplorerServer(explorer: Explorer, faucet: Faucet, rpcUrl: string, projects: string[], options: ServerOptions = {}) {
   const writable = options.writable ?? true;
   const downloads = options.downloads ?? true;
+  const keepAlive = options.keepAlive ?? false;
   const readOnly = "This explorer is running read-only (embedded in offckb), so it doesn't send transactions.";
   // Optional extras must never take /api/info down: offckb's sandbox doesn't allow local_node_info.
   const optional = async <T>(f: () => Promise<T>) => { try { return (await f()) ?? null; } catch { return null; } };
@@ -73,6 +74,10 @@ export function createExplorerServer(explorer: Explorer, faucet: Faucet, rpcUrl:
   ];
 
   const server = createServer(async (req, res) => {
+    // A sandbox CONNECT proxy can lose the tail of a larger response when the
+    // application immediately FINs the reverse socket. Let the host's one-shot
+    // agent close it after consuming the complete response instead.
+    if (keepAlive) res.shouldKeepAlive = true;
     const url = new URL(req.url ?? "/", "http://localhost");
     const json = (status: number, body: unknown) => {
       res.writeHead(status, { "Content-Type": "application/json" });

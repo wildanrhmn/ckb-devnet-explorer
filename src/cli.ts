@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
 import { parseArgs } from "node:util";
-import { getBlock, getTipNumber, type RpcTransaction } from "./rpc.ts";
+import { getBlock, getBlockHash, getTipNumber, type RpcTransaction } from "./rpc.ts";
 import { loadProjectScripts, loadSystemScripts } from "./scripts.ts";
 import { Resolver } from "./resolver.ts";
 import { Explorer, type AddressPrefix } from "./explorer.ts";
@@ -82,8 +82,7 @@ for (const dir of projects) {
 const resolver = new Resolver(known);
 
 if (expectedGenesis) {
-  const genesis = await getBlock(url, 0);
-  const actual = genesis?.header.hash;
+  const actual = await getBlockHash(url, 0);
   if (actual?.toLowerCase() !== expectedGenesis.toLowerCase())
     throw new Error(`RPC genesis mismatch: expected ${expectedGenesis}, got ${actual ?? "no genesis block"}`);
 }
@@ -100,7 +99,7 @@ if (positionals[0] === "serve") {
   const faucet = new Faucet(url, addressPrefix);
   // Reverse-hosted explorers are read-only because the host only supplies read RPC. Its CSP
   // may also disallow downloads; Copy JSON and the Raw view remain available.
-  const options = { writable: !bridge && !values["read-only"], downloads: !bridge };
+  const options = { writable: !bridge && !values["read-only"], downloads: !bridge, keepAlive: !!bridge };
   const server = bridge
     ? createExplorerServer(explorer, faucet, url, projects, options)
     : startServer(explorer, faucet, port, url, projects, values.host, options);

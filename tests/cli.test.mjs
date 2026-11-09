@@ -38,6 +38,8 @@ async function startRpc() {
     let raw = ''; for await (const chunk of req) raw += chunk;
     const body = JSON.parse(raw);
     const result = (call) => {
+      if (call.method === 'get_block_hash') return genesis;
+      if (call.method === 'get_header_by_number' && call.params[0] === '0x0') return { number: '0x0', hash: genesis, timestamp: '0x0' };
       if (call.method === 'get_block_by_number') {
         if (call.params[0] === '0x0' && firstGenesis) {
           firstGenesis = false;
@@ -85,7 +87,10 @@ async function startRelay(token, { fragmentedAck = false, piggybackRequest = fal
       authenticated.push(socket);
       if (piggybackRequest && authenticated.length === 1) {
         let raw = '';
-        socket.on('data', (value) => { raw += value.toString(); });
+        socket.on('data', (value) => {
+          raw += value.toString();
+          if (raw.includes('\r\n0\r\n\r\n')) { socket.destroy(); resolvePiggyback(raw); }
+        });
         socket.once('end', () => resolvePiggyback(raw));
         socket.once('error', rejectPiggyback);
         const request = 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n';
@@ -113,7 +118,10 @@ async function startRelay(token, { fragmentedAck = false, piggybackRequest = fal
       used.add(socket);
       const response = new Promise((resolve, reject) => {
         let raw = '';
-        socket.on('data', (value) => { raw += value.toString(); });
+        socket.on('data', (value) => {
+          raw += value.toString();
+          if (raw.includes('\r\n0\r\n\r\n')) { socket.destroy(); resolve(raw); }
+        });
         socket.once('end', () => resolve(raw));
         socket.once('error', reject);
         setTimeout(() => reject(new Error('relay request timed out')), 5000).unref();
@@ -255,6 +263,10 @@ test('proxy-connect-v1 uses proxy credentials and the authenticated relay protoc
   try {
     assert.equal((await app.ready).transport, 'proxy-connect-v1');
     assert.equal((await relay.request('/')).status, 200);
+    const style = await relay.request('/style.css');
+    assert.equal(style.status, 200);
+    assert.ok(style.body.length > 40000);
+    assert.match(style.body, /animation: none !important/);
     assert.ok(seen.length > 0);
     assert.ok(seen.every((call) => call.path === endpoint));
     assert.ok(seen.every((call) => call.authorization === `Basic ${Buffer.from('user:pass').toString('base64')}`));

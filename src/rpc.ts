@@ -39,7 +39,10 @@ async function request(url: string, body: unknown): Promise<unknown> {
       continue;
     }
     let parsed: any;
-    try { parsed = JSON.parse(text); } catch { throw new Error(`RPC HTTP ${status}: invalid JSON response`); }
+    try { parsed = JSON.parse(text); } catch {
+      const method = Array.isArray(body) ? `batch(${body.length}):${body[0]?.method ?? "unknown"}` : (body as any)?.method ?? "unknown";
+      throw new Error(`RPC HTTP ${status} ${method}: invalid JSON response (${text.length} bytes)`);
+    }
     if (status < 200 || status >= 300) {
       const detail = typeof parsed?.error === "string" ? parsed.error : parsed?.error?.message;
       throw new Error(`RPC HTTP ${status}${detail ? `: ${detail}` : ""}`);
@@ -83,3 +86,6 @@ export const getTipNumber = async (url: string) =>
 
 export const getBlock = (url: string, n: number) =>
   rpc<RpcBlock | null>(url, "get_block_by_number", ["0x" + n.toString(16)]);
+
+export const getBlockHash = (url: string, n: number) =>
+  rpc<string | null>(url, "get_block_hash", ["0x" + n.toString(16)]);

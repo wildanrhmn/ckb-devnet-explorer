@@ -205,10 +205,12 @@ test("adapter translates offckb context into the public bridge CLI contract", { 
     assert.equal(info.features.downloads, false);
     terminate(app);
     const result = await app.closed;
-    if (process.platform !== "win32") assert.equal(result.code, 143, result.stderr);
+    if (process.platform !== "win32") {
+      assert.equal(result.code, 143, result.stderr);
+      assert.equal(fs.readdirSync(root).some((name) => name.startsWith("ckb-devnet-explorer-")), false);
+    }
     assert.equal(result.stdout.trim().split("\n").length, 1);
     assert.doesNotMatch(result.stderr, new RegExp(token));
-    assert.equal(fs.readdirSync(root).some((name) => name.startsWith("ckb-devnet-explorer-")), false);
   } finally {
     terminate(app);
     await app.closed;

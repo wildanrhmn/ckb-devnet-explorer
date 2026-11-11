@@ -66,6 +66,7 @@ async function startRelay(token) {
   const sockets = new Set();
   const server = net.createServer((socket) => {
     sockets.add(socket);
+    socket.on("error", () => {});
     socket.once("close", () => sockets.delete(socket));
     let received = "";
     const authenticate = (chunk) => {

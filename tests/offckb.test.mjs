@@ -12,9 +12,9 @@ const adapter = fileURLToPath(new URL("../offckb/cli.mjs", import.meta.url));
 const manifest = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const genesis = `0x${"11".repeat(32)}`;
 
-function run(contextFile) {
+function run(contextFile, environment = {}) {
   const child = spawn(process.execPath, [adapter], {
-    env: { PATH: "", TMPDIR: path.dirname(contextFile), TMP: path.dirname(contextFile), TEMP: path.dirname(contextFile), NODE_USE_ENV_PROXY: "0", OFFCKB_PLUGIN_CONTEXT: contextFile },
+    env: { PATH: "", TMPDIR: path.dirname(contextFile), TMP: path.dirname(contextFile), TEMP: path.dirname(contextFile), NODE_USE_ENV_PROXY: "0", OFFCKB_PLUGIN_CONTEXT: contextFile, ...environment },
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -121,7 +121,7 @@ async function startRelay(token) {
   };
 }
 
-function contextFile(root, rpcUrl, relay, overrides = {}) {
+function contextFile(root, rpcUrl, relay, { transport = "tcp-v1", token = "adapter-test-token" } = {}) {
   const scripts = path.join(root, "scripts.json");
   fs.writeFileSync(scripts, JSON.stringify({ devnet: {} }));
   const context = {
@@ -130,7 +130,7 @@ function contextFile(root, rpcUrl, relay, overrides = {}) {
     output: "json",
     sandbox: {
       permissions: ["devnet-read", "project-deployment", "serve"],
-      http: { transport: "tcp-v1", endpoint: `127.0.0.1:${relay?.port ?? 1}`, token: "adapter-test-token", url: "http://127.0.0.1:7070" },
+      http: { transport, endpoint: `127.0.0.1:${relay?.port ?? 1}`, token, url: "http://127.0.0.1:7070" },
     },
     devnet: {
       kind: "pure-devnet",
@@ -140,7 +140,6 @@ function contextFile(root, rpcUrl, relay, overrides = {}) {
       systemScriptsFile: scripts,
       systemScriptsVersion: 1,
     },
-    ...overrides,
   };
   const file = path.join(root, "context.json");
   fs.writeFileSync(file, JSON.stringify(context));
@@ -185,6 +184,21 @@ test("adapter rejects an unknown chain without contacting a provider", async () 
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("adapter rejects malformed permissions instead of treating a string as an array", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cde-offckb-test-"));
+  try {
+    const file = contextFile(root, "http://127.0.0.1:1", undefined);
+    const context = JSON.parse(fs.readFileSync(file, "utf8"));
+    context.sandbox.permissions = "devnet-read project-deployment serve";
+    fs.writeFileSync(file, JSON.stringify(context));
+    const app = run(file);
+    const result = await app.closed;
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, "");
+    assert.match(JSON.parse(result.stderr).message, /permissions array/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("adapter translates offckb context into the public bridge CLI contract", { timeout: 10000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cde-offckb-test-"));
   const token = "adapter-test-token";
@@ -216,6 +230,51 @@ test("adapter translates offckb context into the public bridge CLI contract", { 
     await app.closed;
     relay.close();
     rpc.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("adapter translates the default sandbox proxy bridge", { timeout: 10000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cde-offckb-test-"));
+  const token = "sandbox-adapter-token";
+  const relay = await startRelay(token);
+  const rpc = await startRpc();
+  const endpoint = `127.0.0.1:${relay.port}`;
+  const seen = [];
+  const proxy = http.createServer();
+  proxy.on("connect", (req, client, head) => {
+    seen.push({ path: req.url, authorization: req.headers["proxy-authorization"] });
+    const upstream = net.connect(relay.port, "127.0.0.1");
+    upstream.once("connect", () => {
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length) upstream.write(head);
+      client.pipe(upstream);
+      upstream.pipe(client);
+    });
+    upstream.on("error", () => client.destroy());
+    client.on("error", () => upstream.destroy());
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const proxyUrl = `http://user:pass@127.0.0.1:${proxy.address().port}`;
+  const app = run(contextFile(root, rpc.url, relay, { transport: "proxy-connect-v1", token }), { HTTP_PROXY: proxyUrl });
+  try {
+    const ready = await app.ready;
+    assert.deepEqual(ready, { ok: true, apiVersion: 1, command: "explorer", url: "http://127.0.0.1:7070", transport: "proxy-connect-v1" });
+    assert.equal((await relay.request("/")).status, 200);
+    terminate(app);
+    const result = await app.closed;
+    assert.equal(result.stdout.trim().split("\n").length, 1);
+    assert.doesNotMatch(result.stderr, new RegExp(token));
+    assert.ok(seen.length > 0);
+    assert.ok(seen.every((call) => call.path === endpoint));
+    assert.ok(seen.every((call) => call.authorization === `Basic ${Buffer.from("user:pass").toString("base64")}`));
+  } finally {
+    terminate(app);
+    await app.closed;
+    relay.close();
+    rpc.close();
+    proxy.closeAllConnections();
+    proxy.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

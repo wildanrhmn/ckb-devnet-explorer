@@ -86,8 +86,10 @@ function validateContext(context) {
   if (!http || !["proxy-connect-v1", "tcp-v1"].includes(http.transport) || typeof http.endpoint !== "string" || !http.endpoint ||
       typeof http.token !== "string" || !http.token || /[\r\n]/.test(http.token) || typeof http.url !== "string" || !http.url)
     throw new Error("Explorer requires the serve capability and an authenticated HTTP bridge");
+  const permissions = context.sandbox?.permissions;
+  if (!Array.isArray(permissions)) throw new Error("Explorer requires a permissions array in the offckb context");
   for (const permission of ["devnet-read", "project-deployment", "serve"]) {
-    if (!context.sandbox.permissions?.includes(permission)) throw new Error(`Explorer requires the ${permission} grant`);
+    if (!permissions.includes(permission)) throw new Error(`Explorer requires the ${permission} grant`);
   }
 }
 

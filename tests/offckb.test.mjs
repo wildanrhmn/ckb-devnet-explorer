@@ -14,8 +14,9 @@ const genesis = `0x${"11".repeat(32)}`;
 
 function run(contextFile) {
   const child = spawn(process.execPath, [adapter], {
-    env: { PATH: "", TMPDIR: path.dirname(contextFile), NODE_USE_ENV_PROXY: "0", OFFCKB_PLUGIN_CONTEXT: contextFile },
+    env: { PATH: "", TMPDIR: path.dirname(contextFile), TMP: path.dirname(contextFile), TEMP: path.dirname(contextFile), NODE_USE_ENV_PROXY: "0", OFFCKB_PLUGIN_CONTEXT: contextFile },
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
   });
   let stdout = "", stderr = "";
   child.stdout.on("data", (value) => { stdout += value; });
@@ -146,6 +147,12 @@ function contextFile(root, rpcUrl, relay, overrides = {}) {
   return file;
 }
 
+function terminate(app) {
+  if (app.child.exitCode !== null || app.child.signalCode !== null) return;
+  if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(app.child.pid), "/T", "/F"], { stdio: "ignore" });
+  else process.kill(-app.child.pid, "SIGTERM");
+}
+
 test("the package ships a declared, prebuilt offckb adapter", () => {
   assert.equal(manifest.offckb.apiVersion, 1);
   assert.equal(manifest.offckb.command, "explorer");
@@ -196,14 +203,14 @@ test("adapter translates offckb context into the public bridge CLI contract", { 
     assert.equal(info.features.faucet, false);
     assert.equal(info.features.broadcast, false);
     assert.equal(info.features.downloads, false);
-    app.child.kill("SIGTERM");
+    terminate(app);
     const result = await app.closed;
     if (process.platform !== "win32") assert.equal(result.code, 143, result.stderr);
     assert.equal(result.stdout.trim().split("\n").length, 1);
     assert.doesNotMatch(result.stderr, new RegExp(token));
     assert.equal(fs.readdirSync(root).some((name) => name.startsWith("ckb-devnet-explorer-")), false);
   } finally {
-    app.child.kill("SIGTERM");
+    terminate(app);
     await app.closed;
     relay.close();
     rpc.close();

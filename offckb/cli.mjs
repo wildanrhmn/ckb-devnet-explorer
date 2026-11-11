@@ -23,7 +23,6 @@ if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
 }
 
 let json = false;
-let child;
 let temporary;
 
 try {
@@ -51,7 +50,7 @@ try {
   const http = context.sandbox.http;
   fs.writeFileSync(bridge, JSON.stringify({ apiVersion: 1, transport: http.transport, endpoint: http.endpoint, token: http.token, url: http.url }), { mode: 0o600 });
 
-  child = spawn(process.execPath, [
+  const provider = spawn(process.execPath, [
     bin,
     "serve",
     "--json",
@@ -62,9 +61,8 @@ try {
     "--address-prefix", context.devnet.addressPrefix,
     ...projects.flatMap((directory) => ["--project", directory]),
   ], { stdio: ["ignore", "pipe", "inherit"] });
-  process.exitCode = await runProvider(child, context);
+  process.exitCode = await runProvider(provider, context);
 } catch (error) {
-  if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
   const message = error instanceof Error ? error.message : String(error);
   console.error(json ? JSON.stringify({ ok: false, code: "EXPLORER_FAILED", message }) : message);
   process.exitCode = 1;
@@ -80,6 +78,7 @@ function validateContext(context) {
     throw new Error("Explorer requires a known devnet or fork; initialize the chain before starting the plugin");
   if (typeof devnet.rpcUrl !== "string" || !devnet.rpcUrl || typeof devnet.systemScriptsFile !== "string" || !devnet.systemScriptsFile)
     throw new Error("Explorer requires devnet-read and a system scripts snapshot");
+  if (devnet.systemScriptsVersion !== 1) throw new Error("Explorer requires system scripts snapshot API v1");
   if (typeof devnet.genesisHash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(devnet.genesisHash))
     throw new Error("Explorer requires the devnet genesis hash");
   if (!["ckt", "ckb"].includes(devnet.addressPrefix)) throw new Error("Explorer requires a valid address prefix");
@@ -122,19 +121,30 @@ async function runProvider(provider, context) {
   let readyCount = 0;
   let invalid;
   let requested;
+  let termination;
+  const terminate = () => {
+    if (provider.exitCode !== null || provider.signalCode !== null) return;
+    provider.kill("SIGTERM");
+    termination ??= setTimeout(() => provider.kill("SIGKILL"), 3000);
+    termination.unref();
+  };
   const fail = (message) => {
     invalid ??= new Error(message);
-    provider.kill("SIGTERM");
+    terminate();
   };
   const closed = new Promise((resolve, reject) => {
     provider.once("error", reject);
-    provider.once("close", (code, signal) => resolve({ code, signal }));
+    provider.once("close", (code, signal) => {
+      clearTimeout(termination);
+      resolve({ code, signal });
+    });
   });
   const signals = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]];
   const listeners = signals.map(([signal, code]) => {
     const listener = () => {
+      // OffCKB signals the whole POSIX process group, including the provider.
+      // Forwarding here would deliver a second signal and bypass graceful cleanup.
       requested ??= code;
-      provider.kill(signal);
     };
     process.once(signal, listener);
     return [signal, listener];
@@ -167,6 +177,7 @@ async function runProvider(provider, context) {
     if (readyCount !== 1 || buffer.trim()) throw new Error("Explorer exited without one valid ready record");
     return exit.code ?? 1;
   } finally {
+    clearTimeout(termination);
     for (const [signal, listener] of listeners) process.removeListener(signal, listener);
   }
 }

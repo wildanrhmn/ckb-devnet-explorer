@@ -19,6 +19,22 @@ that your deployments are actually on this chain, a faucet, and the reasons the 
 
 You need Node 22+, [OffCKB](https://github.com/ckb-devrel/offckb) (`npm i -g @offckb/cli`) and a running devnet.
 
+### As an offckb plugin
+
+With an offckb build that supports experimental local plugins, install this repository directly and grant only its declared capabilities:
+
+```bash
+offckb plugin install github:wildanrhmn/ckb-devnet-explorer \
+  --allow devnet-read --allow project-deployment --allow serve
+offckb node                                          # in one terminal
+cd my-ckb-project                                    # a project you deployed with `offckb deploy`
+offckb explorer --project .                          # in another
+```
+
+Open **http://localhost:7070**. The plugin runs read-only through offckb's read-RPC gateway and authenticated reverse HTTP bridge. The current folder is used as the project by default, so `offckb explorer` is enough when you are already in it. Default sandbox mode requires macOS/Linux and Node 22.21+ (22.x) or 24.5+; on Windows, explicitly add `--trust` to the install command for native execution.
+
+### Standalone
+
 ```bash
 offckb node                                          # in one terminal
 cd my-ckb-project                                    # a project you deployed with `offckb deploy`
@@ -198,9 +214,9 @@ For a sandbox without TCP listening rights, the adapter writes a short-lived bri
 
 The embedder accepts multiple connections and sends ordinary HTTP/1.1 requests over each; use `Connection: close` for one request per connection. Explorer lets the host's one-shot agent close each reverse channel after the complete response is consumed, avoiding tail truncation when a sandbox proxy forwards a larger response and an immediate FIN. Explorer reconnects used/closed channels until shutdown and fails if no channel authenticates within five seconds. Readiness is `{ "ok": true, "apiVersion": 1, "url": "http://127.0.0.1:7070", "transport": "proxy-connect-v1" }` when the config supplies a public URL.
 
-For offckb, the adapter creates this config from `context.sandbox.http`, passes `context.devnet.rpcUrl`, `context.devnet.systemScriptsFile` and `context.cwd`, and keeps the token out of logs. It declares only the capabilities it needs (`devnet-read`, `serve`, and optionally `project-deployment`), which the user must explicitly grant. This Explorer package remains the application/provider; the offckb manifest and context translation belong to its separately released adapter.
+For offckb, the bundled `offckb/cli.mjs` adapter creates this config from `context.sandbox.http`, passes `context.devnet.rpcUrl`, `context.devnet.systemScriptsFile`, `context.devnet.genesisHash`, `context.devnet.addressPrefix` and `context.cwd`, and keeps the token out of logs and argv. The package declares only the capabilities it needs (`devnet-read`, `project-deployment` and `serve`), which the user must explicitly grant. The adapter invokes the Explorer through its declared public bin and API v1; it does not import private application modules.
 
-The adapter must reject an unknown chain or a missing scripts/genesis snapshot. Pass `--expected-genesis <context.devnet.genesisHash>` so Explorer independently rejects an RPC endpoint belonging to a different chain, and `--address-prefix <context.devnet.addressPrefix>` (`ckb` for a mainnet fork, otherwise `ckt`).
+The adapter rejects an unknown chain or a missing scripts/genesis snapshot. It passes `--expected-genesis <context.devnet.genesisHash>` so Explorer independently rejects an RPC endpoint belonging to a different chain, and `--address-prefix <context.devnet.addressPrefix>` (`ckb` for a mainnet fork, otherwise `ckt`).
 
 Bridge mode always runs read-only: offckb only forwards read RPC methods and has no `offckb` binary, so the faucet and transaction broadcast are switched off, and pages hide them. `--read-only` provides the same server protection for a directly hosted instance. `/api/info` reports `faucet`, `broadcast`, `accounts` and `downloads`; downloads are hidden in bridge mode because offckb's CSP does not allow them, while Copy JSON and Raw remain available.
 

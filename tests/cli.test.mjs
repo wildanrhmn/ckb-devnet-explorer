@@ -77,6 +77,7 @@ async function startRelay(token, { fragmentedAck = false, piggybackRequest = fal
   piggyback.catch(() => {});
   const server = net.createServer((socket) => {
     sockets.add(socket);
+    socket.on('error', () => {});
     socket.once('close', () => sockets.delete(socket));
     let received = '';
     const authenticate = (chunk) => {

@@ -1,13 +1,21 @@
 {
   "name": "ckb-devnet-explorer",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A lightweight explorer for OffCKB devnets: no database, reads the node directly, names your own deployed scripts.",
   "type": "module",
   "bin": {
     "ckb-devnet-explorer": "./bin/ckb-devnet-explorer.js"
   },
+  "offckb": {
+    "apiVersion": 1,
+    "command": "explorer",
+    "entry": "offckb/cli.mjs",
+    "description": "Browse the current devnet in a sandboxed explorer",
+    "permissions": ["devnet-read", "project-deployment", "serve"]
+  },
   "files": [
     "bin",
+    "offckb",
     "src"
   ],
   "engines": {
